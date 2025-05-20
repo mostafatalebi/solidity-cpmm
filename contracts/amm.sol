@@ -15,12 +15,11 @@ error ErrForbidden();
 error ErrIncomingTxFailed(address from, address to , uint amount);
 error ErrOutgoingTxFailed(address from, address to, uint amount);
 error ErrReserveIsZero();
+error ErrReserveBecomesZero();
 error ErrTokenLessThanExpectedAmount(uint t0, uint t1);
+error ErrLpToBurnIsNotEnough();
 
 contract MainAMM is ERC20 {
-    uint LP_TOKEN_SUUPLY = 1_000_000;
-    uint LP_TOKEN_LOCKED_AMOUNT_FOREVER = 1000;
-
     uint240 Q120 = 2**120;
     bool private initialized = false;
     address owner;
@@ -37,12 +36,7 @@ contract MainAMM is ERC20 {
 
     uint public ratioK;
     
-    mapping (address => uint) public balances;
-
-    mapping (address => uint) public t0LpBalance;
-    mapping (address => uint) public t1LpBalance;
-
-    uint public lastPricePnt;
+    mapping (address => uint) public reserves;
 
     bool locked = false;
 
@@ -54,13 +48,12 @@ contract MainAMM is ERC20 {
     }    
 
     
-    constructor(address _t0, address _t1) ERC20("MosiLpToken", "MsxLp") {      
+    constructor(address _t0, address _t1) ERC20("LpToken", "LPT") {      
         t0 = ERC20(_t0);
         t0Addr = _t0;
         t1 = ERC20(_t1);
         t1Addr = _t1;
         owner = msg.sender;
-        _mint(address(this), LP_TOKEN_SUUPLY);
     }
     
     // bootstrap the contract to set initial ratio of t0 and t1
@@ -77,17 +70,10 @@ contract MainAMM is ERC20 {
         require(t0.transferFrom(msg.sender, address(this), _t0Amount), ErrIncomingTxFailed(msg.sender, address(this), _t0Amount));
         require(t1.transferFrom(msg.sender, address(this), _t1Amount), ErrIncomingTxFailed(msg.sender, address(this), _t1Amount));
 
-        balances[_t0] += _t0Amount;
-        balances[_t1] += _t1Amount;        
+        reserves[_t0] += _t0Amount;
+        reserves[_t1] += _t1Amount;        
 
         ratioK = _calcK();
-
-        _approve(address(this), owner, LP_TOKEN_LOCKED_AMOUNT_FOREVER);
-        
-        // we use burn function (not actual locking)
-        // @todo we can implement locking later
-        _burn(address(this), LP_TOKEN_LOCKED_AMOUNT_FOREVER);// locking forever
-
         uint _lpShare = _calcLpShare(_t0Amount, _t1Amount);
         _mint(msg.sender, _lpShare);
         _calcRatios();
@@ -97,8 +83,8 @@ contract MainAMM is ERC20 {
     function getExpectedAmount(address t, uint amount) public view returns (uint) {
         require(amount != 0, ErrInputIsZero());
         address other = _theOtherToken(t);
-        require(balances[other] > 0 && balances[t] > 0, ErrReserveIsZero());
-        return (amount * balances[other]) / balances[t];
+        require(reserves[other] > 0 && reserves[t] > 0, ErrReserveIsZero());
+        return (amount * reserves[other]) / reserves[t];
     }    
 
     
@@ -110,36 +96,32 @@ contract MainAMM is ERC20 {
     function swap(address _tokenIn, uint _amountIn) external lock returns (address, uint) {
         require(_tokenIn == t0Addr || _tokenIn == t1Addr, ErrWrongTokenAddress());
         require(_amountIn > 0, ErrInputIsZero());
-        require(balances[_tokenIn] > _amountIn, ErrNotEnoughLiquidity());
+        require(reserves[_tokenIn] > _amountIn, ErrNotEnoughLiquidity());
         ERC20 tIn = ERC20(_tokenIn);
         require(tIn.transferFrom(msg.sender, address(this), _amountIn), ErrIncomingTxFailed(msg.sender, address(this), _amountIn));
         (uint amountInWithFee, uint amountOut) = _calcAmountOut(_tokenIn, _amountIn);
         address tokenOut = _theOtherToken(_tokenIn);
-        require(balances[tokenOut] > amountOut, ErrNotEnoughLiquidity());
-        uint _t0Balance = balances[t0Addr] + amountInWithFee;
-        uint _t1Balance = balances[t1Addr] - amountOut;
+        require(reserves[tokenOut] > amountOut, ErrNotEnoughLiquidity());
+        uint _t0Balance = reserves[t0Addr] + amountInWithFee;
+        uint _t1Balance = reserves[t1Addr] - amountOut;
         if(_tokenIn == t1Addr) {
-            _t0Balance = balances[t0Addr] - amountOut;
-            _t1Balance = balances[t1Addr] + amountInWithFee;
+            _t0Balance = reserves[t0Addr] - amountOut;
+            _t1Balance = reserves[t1Addr] + amountInWithFee;
         }
         ERC20 tOut = ERC20(tokenOut);
         require(tOut.transfer(msg.sender, amountOut), ErrOutgoingTxFailed(address(this), msg.sender, amountOut));
-        _updateBalances(_t0Balance, _t1Balance);
+        _updateReserves(_t0Balance, _t1Balance);
         _calcRatios();
         return(tokenOut, amountOut);
-    }    
-
-    function burnLiquidity() external lock {
-
-    }
+    }        
 
     // this function is core the the calcualtion of pair amount of a given token
     // it also subtracts the fee from the amountIn and the continue the calculation
     function _calcAmountOut(address tokenIn, uint amountIn) public view returns (uint amountAfterFee, uint amountOut) {
         address otherToken = _theOtherToken(tokenIn);
         amountAfterFee = amountIn * 997;
-        uint numerator = amountAfterFee * balances[otherToken];
-        uint denominator = (balances[tokenIn] * 1000) + amountAfterFee;
+        uint numerator = amountAfterFee * reserves[otherToken];
+        uint denominator = (reserves[tokenIn] * 1000) + amountAfterFee;
         amountOut = numerator / denominator;
         amountAfterFee = amountAfterFee/1000;
     }
@@ -157,12 +139,12 @@ contract MainAMM is ERC20 {
         
         (amount0, amount1, lpShare) = _addLiquidity(_t0Amount, _t1Amount);
     }
-    
+        
     
     function _addLiquidity(uint _t0RequestedAmount, uint _t1RequestedAmount) private returns (uint amount0, uint amount1, uint lpShare) {
         require(_t0RequestedAmount != 0, ErrInputIsZero());
         require(_t1RequestedAmount != 0, ErrInputIsZero());
-        require(balances[t0Addr] > 0 && balances[t1Addr] > 0, ErrNotEnoughLiquidity());
+        require(reserves[t0Addr] > 0 && reserves[t1Addr] > 0, ErrNotEnoughLiquidity());
 
         uint expected_1 = getExpectedAmount(t0Addr, _t0RequestedAmount);
         if(expected_1 <= _t1RequestedAmount){
@@ -182,39 +164,49 @@ contract MainAMM is ERC20 {
         bool r2 = t1.transferFrom(msg.sender, address(this), amount1);
 
         require(r0 && r2, ErrTokensTransferFailed());
-        
-        _addToLp(amount0, amount1);
 
         lpShare = _calcLpShare(amount0, amount1);
         _mint(msg.sender, lpShare);
+        _addToReserves(amount0, amount1);
+        _calcRatios();
+    }
+
+    // based on the amount of LP recieved, it burns the LP token and
+    // sends back the corresponding amount of t0 and t1 to the sender
+    // LP token can be held by anyone. Withdrawl doesn't need
+    // to happen by original LP receiver. This way, LP tokens
+    // can be circulated around and anyone can claim back
+    // t0 and t1 amounts based on the LP amount he/she is holding.
+    // The caller of this, needs to first approve _lpTokenAmount of
+    // allowance
+    function burnLiquidity(uint _lpTokenAmount) external lock {
+        require(_lpTokenAmount > 0, ErrInputIsZero());
+        require(ERC20(address(this)).transferFrom(msg.sender, address(this), _lpTokenAmount), ErrIncomingTxFailed(msg.sender, address(this), _lpTokenAmount));
+        uint _t0Amount = reserves[t0Addr] * _lpTokenAmount / totalSupply();
+        uint _t1Amount = reserves[t1Addr] * _lpTokenAmount / totalSupply();
+        require(_t0Amount > 0 && _t1Amount > 0, ErrLpToBurnIsNotEnough());
+
+        _burn(address(this), _lpTokenAmount);
+        
+        t0.transfer(msg.sender, _t0Amount);
+        t0.transfer(msg.sender, _t1Amount);
+
+        _subtractFromReserves(_t0Amount, _t1Amount);
+        _calcRatios();
     }
 
     // retursn two numbers, each representative of the expected amount of the token
     // based on the given amount of the other token as input
     function calculateExpectedAmounts(uint t0NewAmount, uint t1NewAmount) public view returns (uint expectedT1, uint expectedT0) {
-        require(balances[t0Addr] > 0, ErrReserveIsZero());
-        require(balances[t1Addr] > 0, ErrReserveIsZero());
-        expectedT1 = t0NewAmount * balances[t1Addr] / balances[t0Addr];
-        expectedT0 = t1NewAmount * balances[t0Addr] / balances[t1Addr];
-    }
-
-    // it returns the share of the LP from the pool
-    // in percentage
-    function _addToLp(uint _t0Amount, uint _t1Amount) private returns (uint) {
-        t0LpBalance[msg.sender] += _t0Amount;
-        t1LpBalance[msg.sender] += _t1Amount;
-
-        return 0;
-    }
-
-    function subtractFromLp(uint _t0Amount, uint _t1Amount) private {
-        t0LpBalance[msg.sender] -= _t0Amount;
-        t1LpBalance[msg.sender] -= _t1Amount;
+        require(reserves[t0Addr] > 0, ErrReserveIsZero());
+        require(reserves[t1Addr] > 0, ErrReserveIsZero());
+        expectedT1 = t0NewAmount * reserves[t1Addr] / reserves[t0Addr];
+        expectedT0 = t1NewAmount * reserves[t0Addr] / reserves[t1Addr];
     }
 
     // returns constant product of two amounts
     function _calcK() private view returns (uint) {
-        return balances[t0Addr]*balances[t1Addr];
+        return reserves[t0Addr]*reserves[t1Addr];
     }
 
     // the caller has to do the validation
@@ -229,24 +221,36 @@ contract MainAMM is ERC20 {
         return (amountAfterFee);
     }
 
-    function fixedNumber(uint120 n) internal view returns (uint240) {
-        return uint240(n * Q120);
-    }
-
     // after each call to swap() and liquidity(), this needs to be called
     // to update latest ratios
     function _calcRatios() internal {
-        t0t1Ratio = ratioK / balances[t0Addr];
-        t1t0Ratio = ratioK / balances[t1Addr];
+        t0t1Ratio = ratioK / reserves[t0Addr];
+        t1t0Ratio = ratioK / reserves[t1Addr];
+    }
+
+    
+    function _addToReserves(uint _amount0, uint _amount1) internal {
+        reserves[t0Addr] = reserves[t0Addr] + _amount0;
+        reserves[t1Addr] = reserves[t1Addr] + _amount1;
+    }
+
+    // Removes reserves and ensures it doesn't become
+    // equal to zero, or below it
+    function _subtractFromReserves(uint _amount0, uint _amount1) internal {
+        _amount0 = reserves[t0Addr] - _amount0;
+        _amount1 = reserves[t1Addr] - _amount1;
+        require(_amount0 > 0 && _amount1 > 0, ErrReserveBecomesZero());
+        reserves[t0Addr] = _amount0;
+        reserves[t1Addr] = _amount1;
     }
 
     // following Uniswap's function, it calculates the assert equivalent of the base asset passed
     // to the function
     function _calcQuote(address tokenIn, uint amountIn) internal view returns (uint amountOut) {
         require(amountIn > 0, ErrInputIsZero());
-        require(balances[t0Addr] > 0 && balances[t1Addr] > 0, ErrReserveIsZero());
+        require(reserves[t0Addr] > 0 && reserves[t1Addr] > 0, ErrReserveIsZero());
         address otherToken = _theOtherToken(tokenIn);
-        amountOut = amountIn * balances[tokenIn] / balances[otherToken];
+        amountOut = amountIn * reserves[tokenIn] / reserves[otherToken];
     }
 
 
@@ -263,10 +267,11 @@ contract MainAMM is ERC20 {
 
     // the caller has to do the validation
     // returns tokenOut address as well as the amount of tokenOut calculated
-    function _updateBalances(uint _amount0, uint _amount1) internal  {
+    // it sets the reserves 
+    function _updateReserves(uint _amount0, uint _amount1) internal  {
         require(_amount0 > 0 && _amount1 > 0, ErrInputIsZero());
-        balances[t0Addr] = _amount0;
-        balances[t1Addr] = _amount1;
+        reserves[t0Addr] = _amount0;
+        reserves[t1Addr] = _amount1;
     }
 
     function _calcLpShare(uint _t0, uint _t1) internal pure returns (uint) {
