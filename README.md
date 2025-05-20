@@ -2,13 +2,21 @@
 
 CPMM in Solidity.
 
-It allows to create a liquidity pool for a pair of ERC20 compatible tokens. 
+It uses Constant Product Market Maker to manage paired token pricing.
 
-I used Uniswap V2 as my reference. The contract uses another ERC20 contract for its tests which are written typescript. 
+It exposes three public functions: 
 
-The contract is not finished and needs some more features to be added (such as LP be able to remove his liquidity).
+### addLiquidity()
+Used for adding liquidity to the pool. It forces the current ratio to unrealistic price slippage.
 
-Currently the contract exposes swap() and addLiquidity() function for interacting with the pool. We need to add further
-functions (such as burn()) into the pool as well.
+Requires the caller to first approve() transfer of the tokens (two tokens of the pair). The caller will recieve
+an amount of LP proportional to the amounts contributed to the pool.
 
-Tests are written in hardhat, mocha and chai using typescript. 
+### burnLiquidity()
+Used to remove liquidity. It requires the caller to first approve() transfer of n amout of
+his/her LP tokens. A calculated amount of both tokens based on the amount of LP relative to the 
+whole pool size will be sent to the caller.
+
+### swap()
+Used by traders, allows swapping an amount of token for the other token. 
+A ratio is forced to avoid unrealistic pricing shifts. 
