@@ -19,6 +19,12 @@ error ErrReserveBecomesZero();
 error ErrTokenLessThanExpectedAmount(uint t0, uint t1);
 error ErrLpToBurnIsNotEnough();
 
+
+event Swap(uint amount0, uint amount1);
+event LiquidityAdded(uint amount0, uint amount1, uint outgoingLpToken);
+event LiquidityRemoved(uint amount0, uint amount1, uint incomingLpToken);
+
+
 contract MainAMM is ERC20 {
     bool private initialized = false;
     address owner;
@@ -38,7 +44,7 @@ contract MainAMM is ERC20 {
     bool locked = false;
 
     modifier lock() {
-        require(locked == false, "Locked");
+        require(!locked, "Locked");
         locked = true;
         _;
         locked = false;
@@ -110,6 +116,7 @@ contract MainAMM is ERC20 {
         require(tOut.transfer(msg.sender, amountOut), ErrOutgoingTxFailed(address(this), msg.sender, amountOut));
         _updateReserves(_t0Balance, _t1Balance);
         _calcRatios();
+        emit Swap(_amountIn, amountOut);
         return(tokenOut, amountOut);
     }        
 
@@ -136,6 +143,7 @@ contract MainAMM is ERC20 {
         require(_amount1 != 0, ErrInputIsZero());
         
         (amount0, amount1, lpShare) = _addLiquidity(_amount0, _amount1);
+        emit LiquidityAdded(amount0, amount1, lpShare);
     }
         
     
@@ -191,6 +199,8 @@ contract MainAMM is ERC20 {
 
         _subtractFromReserves(_t0Amount, _t1Amount);
         _calcRatios();
+
+        emit LiquidityRemoved(_t0Amount, _t1Amount, _lpTokenAmount)
     }
 
     // retursn two numbers, each representative of the expected amount of the token
