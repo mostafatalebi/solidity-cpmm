@@ -20,11 +20,8 @@ error ErrTokenLessThanExpectedAmount(uint t0, uint t1);
 error ErrLpToBurnIsNotEnough();
 
 contract MainAMM is ERC20 {
-    uint240 Q120 = 2**120;
     bool private initialized = false;
     address owner;
-
-    uint public immutable feePercentage = 997; // 1000-997 = 3 / 1000 => 0.3% fee
 
     ERC20 public immutable t0;
     ERC20 public immutable t1;
@@ -49,6 +46,7 @@ contract MainAMM is ERC20 {
 
     
     constructor(address _t0, address _t1) ERC20("LpToken", "LPT") {      
+        require(_t0 != address(0) && _t1 != address(0), ErrWrongTokenAddress());
         t0 = ERC20(_t0);
         t0Addr = _t0;
         t1 = ERC20(_t1);
@@ -60,21 +58,21 @@ contract MainAMM is ERC20 {
     // it can be called only once, and after that, the contract's product  
     // constant cannot be changed. 
     // It returns the ratio constant 
-    function bootstrap(address _t0, address _t1, uint _t0Amount, uint _t1Amount) external lock returns (uint) {
+    function bootstrap(address _t0, address _t1, uint _amount0, uint _amount1) external lock returns (uint) {
         require(owner == msg.sender, ErrForbidden());
         require(initialized == false, ErrContractAlreadyInitialized());
         require(t0Addr == _t0 && t1Addr == _t1, ErrWrongTokenAddress());
-        require(_t0Amount > 0, ErrInputIsZero());
-        require(_t1Amount > 0, ErrInputIsZero());
+        require(_amount0 > 0, ErrInputIsZero());
+        require(_amount1 > 0, ErrInputIsZero());
 
-        require(t0.transferFrom(msg.sender, address(this), _t0Amount), ErrIncomingTxFailed(msg.sender, address(this), _t0Amount));
-        require(t1.transferFrom(msg.sender, address(this), _t1Amount), ErrIncomingTxFailed(msg.sender, address(this), _t1Amount));
+        require(t0.transferFrom(msg.sender, address(this), _amount0), ErrIncomingTxFailed(msg.sender, address(this), _amount0));
+        require(t1.transferFrom(msg.sender, address(this), _amount1), ErrIncomingTxFailed(msg.sender, address(this), _amount1));
 
-        reserves[_t0] += _t0Amount;
-        reserves[_t1] += _t1Amount;        
+        reserves[_t0] += _amount0;
+        reserves[_t1] += _amount1;        
 
         ratioK = _calcK();
-        uint _lpShare = _calcLpShare(_t0Amount, _t1Amount);
+        uint _lpShare = _calcLpShare(_amount0, _amount1);
         _mint(msg.sender, _lpShare);
         _calcRatios();
         return ratioK;
@@ -133,11 +131,11 @@ contract MainAMM is ERC20 {
     // When conditions met, LP share of token is minted to the lp user. So in general,
     // one side of the pair will follow the pricing as given by user, and the other
     // one will follow the ratio.
-    function addLiquidity(uint _t0Amount, uint _t1Amount) external lock returns (uint amount0, uint amount1, uint lpShare) {
-        require(_t0Amount != 0, ErrInputIsZero());
-        require(_t1Amount != 0, ErrInputIsZero());
+    function addLiquidity(uint _amount0, uint _amount1) external lock returns (uint amount0, uint amount1, uint lpShare) {
+        require(_amount0 != 0, ErrInputIsZero());
+        require(_amount1 != 0, ErrInputIsZero());
         
-        (amount0, amount1, lpShare) = _addLiquidity(_t0Amount, _t1Amount);
+        (amount0, amount1, lpShare) = _addLiquidity(_amount0, _amount1);
     }
         
     
@@ -188,8 +186,8 @@ contract MainAMM is ERC20 {
 
         _burn(address(this), _lpTokenAmount);
         
-        t0.transfer(msg.sender, _t0Amount);
-        t0.transfer(msg.sender, _t1Amount);
+        require(t0.transfer(msg.sender, _t0Amount), ErrOutgoingTxFailed(address(this), msg.sender, _t0Amount));
+        require(t1.transfer(msg.sender, _t1Amount), ErrOutgoingTxFailed(address(this), msg.sender, _t1Amount));
 
         _subtractFromReserves(_t0Amount, _t1Amount);
         _calcRatios();
