@@ -200,7 +200,7 @@ contract MainAMM is ERC20 {
         _subtractFromReserves(_t0Amount, _t1Amount);
         _calcRatios();
 
-        emit LiquidityRemoved(_t0Amount, _t1Amount, _lpTokenAmount)
+        emit LiquidityRemoved(_t0Amount, _t1Amount, _lpTokenAmount);
     }
 
     // retursn two numbers, each representative of the expected amount of the token
